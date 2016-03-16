@@ -21,6 +21,17 @@ package zmq;
 
 import java.nio.ByteBuffer;
 
+//  Helper base class for decoders that know the amount of data to read
+//  in advance at any moment. Knowing the amount in advance is a property
+//  of the protocol used. 0MQ framing protocol is based size-prefixed
+//  paradigm, which qualifies it to be parsed by this class.
+//  On the other hand, XML-based transports (like XMPP or SOAP) don't allow
+//  for knowing the size of data to read in advance and should use different
+//  decoding algorithms.
+//
+//  This class implements the state machine that parses the incoming buffer.
+//  Derived class should implement individual state machine actions.
+
 public class V1Decoder extends DecoderBase
 {
     private static final int ONE_BYTE_SIZE_READY = 0;
@@ -31,23 +42,19 @@ public class V1Decoder extends DecoderBase
     private final byte[] tmpbuf;
     private final ByteBuffer tmpbufWrap;
     private Msg inProgress;
-    private IMsgSink msgSink;
     private final long maxmsgsize;
-    private int msgFlags;
+    private IMsgSink msgSink;
 
-    public V1Decoder(int bufsize, long maxmsgsize, IMsgSink session)
+    public V1Decoder(int bufsize, long maxmsgsize)
     {
         super(bufsize);
-
         this.maxmsgsize = maxmsgsize;
-        msgSink = session;
-
         tmpbuf = new byte[8];
         tmpbufWrap = ByteBuffer.wrap(tmpbuf);
         tmpbufWrap.limit(1);
 
-        //  At the beginning, read one byte and go to ONE_BYTE_SIZE_READY state.
-        nextStep(tmpbufWrap, FLAGS_READY);
+        //  At the beginning, read one byte and go to oneByteSizeReady state.
+        nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
     }
 
     //  Set the receiver of decoded messages.
@@ -76,61 +83,80 @@ public class V1Decoder extends DecoderBase
 
     private boolean oneByteSizeReady()
     {
-        int size = tmpbuf[0];
-        if (size < 0) {
-            size = (0xff) & size;
+        //  First byte of size is read. If it is 0xff(-1 for java byte) read 8-byte size.
+        //  Otherwise allocate the buffer for message data and read the
+        //  message data into it.
+        tmpbufWrap.position(0);
+        byte first = tmpbuf[0];
+        if (first == -1) {
+            tmpbufWrap.limit(8);
+            nextStep(tmpbufWrap, EIGHT_BYTE_SIZE_READY);
         }
-
-        //  Message size must not exceed the maximum allowed size.
-        if (maxmsgsize >= 0) {
-            if (size > maxmsgsize) {
+        else {
+            //  There has to be at least one byte (the flags) in the message).
+            if (first == 0) {
                 decodingError();
                 return false;
             }
+
+            int size = (int) first;
+            if (size < 0) {
+                size = (0xFF) & first;
+            }
+
+            //  inProgress is initialised at this point so in theory we should
+            //  close it before calling msgInitWithSize, however, it's a 0-byte
+            //  message and thus we can treat it as uninitialised...
+            if (maxmsgsize >= 0 && (long) (size - 1) > maxmsgsize) {
+                decodingError();
+                return false;
+
+            }
+            else {
+                inProgress = getMsgAllocator().allocate(size - 1);
+            }
+
+            tmpbufWrap.limit(1);
+            nextStep(tmpbufWrap, FLAGS_READY);
         }
-
-        //  inProgress is initialised at this point so in theory we should
-        //  close it before calling msgInitWithSize, however, it's a 0-byte
-        //  message and thus we can treat it as uninitialised...
-        inProgress = getMsgAllocator().allocate(size);
-
-        inProgress.setFlags(msgFlags);
-        nextStep(inProgress,
-                MESSAGE_READY);
-
         return true;
+
     }
 
     private boolean eightByteSizeReady()
     {
-        //  The payload size is encoded as 64-bit unsigned integer.
-        //  The most significant byte comes first.
+        //  8-byte payload length is read. Allocate the buffer
+        //  for message body and read the message data into it.
         tmpbufWrap.position(0);
         tmpbufWrap.limit(8);
-        final long msgSize = tmpbufWrap.getLong(0);
+        final long payloadLength = tmpbufWrap.getLong(0);
 
-        //  Message size must not exceed the maximum allowed size.
-        if (maxmsgsize >= 0) {
-            if (msgSize > maxmsgsize) {
-                decodingError();
-                return false;
-            }
-        }
-
-        //  Message size must fit within range of size_t data type.
-        if (msgSize > Integer.MAX_VALUE) {
+        //  There has to be at least one byte (the flags) in the message).
+        if (payloadLength <= 0) {
             decodingError();
             return false;
         }
 
-        //  inProgress is initialised at this point so in theory we should
-        //  close it before calling init_size, however, it's a 0-byte
-        //  message and thus we can treat it as uninitialised.
-        inProgress = getMsgAllocator().allocate((int) msgSize);
+        //  Message size must not exceed the maximum allowed size.
+        if (maxmsgsize >= 0 && payloadLength - 1 > maxmsgsize) {
+            decodingError();
+            return false;
+        }
 
-        inProgress.setFlags(msgFlags);
-        nextStep(inProgress,
-                MESSAGE_READY);
+        //  Message size must fit within range of size_t data type.
+        if (payloadLength - 1 > Integer.MAX_VALUE) {
+            decodingError();
+            return false;
+        }
+
+        final int msgSize = (int) (payloadLength - 1);
+        //  inProgress is initialized at this point so in theory we should
+        //  close it before calling init_size, however, it's a 0-byte
+        //  message and thus we can treat it as uninitialized...
+        inProgress = getMsgAllocator().allocate(msgSize);
+
+        tmpbufWrap.limit(1);
+        nextStep(tmpbufWrap, FLAGS_READY);
 
         return true;
     }
@@ -138,25 +164,16 @@ public class V1Decoder extends DecoderBase
     private boolean flagsReady()
     {
         //  Store the flags from the wire into the message structure.
-        msgFlags = 0;
-        int first = tmpbuf[0];
-        if ((first & V1Protocol.MORE_FLAG) > 0) {
-            msgFlags |= Msg.MORE;
-        }
 
-        //  The payload length is either one or eight bytes,
-        //  depending on whether the 'large' bit is set.
-        tmpbufWrap.position(0);
-        if ((first & V1Protocol.LARGE_FLAG) > 0) {
-            tmpbufWrap.limit(8);
-            nextStep(tmpbufWrap, EIGHT_BYTE_SIZE_READY);
-        }
-        else {
-            tmpbufWrap.limit(1);
-            nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
-        }
+        int first = tmpbuf[0];
+
+        inProgress.setFlags(first & Msg.MORE);
+
+        nextStep(inProgress,
+                MESSAGE_READY);
 
         return true;
+
     }
 
     private boolean messageReady()
@@ -170,16 +187,12 @@ public class V1Decoder extends DecoderBase
 
         int rc = msgSink.pushMsg(inProgress);
         if (rc != 0) {
-            if (rc != ZError.EAGAIN) {
-                decodingError();
-            }
-
             return false;
         }
 
         tmpbufWrap.position(0);
         tmpbufWrap.limit(1);
-        nextStep(tmpbufWrap, FLAGS_READY);
+        nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
 
         return true;
     }

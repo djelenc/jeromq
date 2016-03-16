@@ -37,7 +37,7 @@ public class TestDecoder
     public void setUp()
     {
         session = new DummySession();
-        decoder = new Decoder(64, 256);
+        decoder = new V1Decoder(64, 256);
         decoder.setMsgSink(session);
     }
 

@@ -39,7 +39,7 @@ public class TestEncoder
     public void setUp()
     {
         session = new DummySession();
-        encoder = new Encoder(64);
+        encoder = new V1Encoder(64);
         encoder.setMsgSource(session);
         sock = new DummySocketChannel();
     }

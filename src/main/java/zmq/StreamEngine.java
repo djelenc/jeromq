@@ -28,6 +28,19 @@ import java.nio.channels.SocketChannel;
 
 public class StreamEngine implements IEngine, IPollEvents, IMsgSink
 {
+    enum Protocol
+    {
+        ZMTP_1_0((byte) 0),
+        ZMTP_2_0((byte) 1);
+
+        public final byte value;
+
+        Protocol(byte b)
+        {
+            value = b;
+        }
+    }
+
     //  Size of the greeting message:
     //  Preamble (10 bytes) + version (1 byte) + socket type (1 byte).
     private static final int GREETING_SIZE = 12;
@@ -113,22 +126,22 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         }
     }
 
-    private DecoderBase newDecoder(int size, long max, SessionBase session, int version)
+    private DecoderBase newDecoder(int size, long max, SessionBase session, Protocol version)
     {
        DecoderBase decoder;
        if (options.decoder == null) {
-            if (version == V1Protocol.VERSION) {
-               decoder = new V1Decoder(size, max, session);
+            if (version == Protocol.ZMTP_2_0) {
+               decoder = new V2Decoder(size, max, session);
             }
             else {
-               decoder = new Decoder(size, max);
+               decoder = new V1Decoder(size, max);
             }
         }
         else {
            try {
                Constructor<? extends DecoderBase> dcon;
 
-               if (version == 0)  {
+               if (version == Protocol.ZMTP_1_0)  {
                    dcon = options.decoder.getConstructor(int.class, long.class);
                    decoder = dcon.newInstance(size, max);
                }
@@ -160,19 +173,19 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         return decoder;
     }
 
-    private EncoderBase newEncoder(int size, SessionBase session, int version)
+    private EncoderBase newEncoder(int size, SessionBase session, Protocol version)
     {
         if (options.encoder == null) {
-            if (version == V1Protocol.VERSION) {
-                return new V1Encoder(size, session);
+            if (version == Protocol.ZMTP_2_0) {
+                return new V2Encoder(size, session);
             }
-            return new Encoder(size);
+            return new V1Encoder(size);
         }
 
         try {
             Constructor<? extends EncoderBase> econ;
 
-            if (version == 0) {
+            if (version == Protocol.ZMTP_1_0) {
                 econ = options.encoder.getConstructor(int.class);
                 return econ.newInstance(size);
             }
@@ -521,10 +534,10 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         //  If so, we send and receive rests of identity
         //  messages.
         if ((greeting.get(0) & 0xff) != 0xff || (greeting.get(9) & 0x01) == 0) {
-            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), null, 0);
+            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), null, Protocol.ZMTP_1_0);
             encoder.setMsgSource(session);
 
-            decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, null, 0);
+            decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, null, Protocol.ZMTP_1_0);
             decoder.setMsgSink(session);
 
             //  We have already sent the message header.
@@ -553,19 +566,19 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
             }
         }
         else
-        if (greeting.get(versionPos) == 0) {
+        if (greeting.get(versionPos) == Protocol.ZMTP_1_0.value) {
             //  ZMTP/1.0 framing.
-            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), null, 0);
+            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), null, Protocol.ZMTP_1_0);
             encoder.setMsgSource(session);
 
-            decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, null, 0);
+            decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, null, Protocol.ZMTP_1_0);
             decoder.setMsgSink(session);
         }
         else {
-            //  v1 framing protocol.
-            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), session, V1Protocol.VERSION);
+            //  ZMTP/2.0 framing protocol.
+            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), session, Protocol.ZMTP_2_0);
 
-            decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, session, V1Protocol.VERSION);
+            decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, session, Protocol.ZMTP_2_0);
         }
         // Start polling for output if necessary.
         if (outsize == 0) {

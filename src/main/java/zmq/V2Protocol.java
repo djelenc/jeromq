@@ -19,13 +19,12 @@
 
 package zmq;
 
-class V1Protocol
+class V2Protocol
 {
-    private V1Protocol()
+    private V2Protocol()
     {
     }
 
-    public static final int VERSION = 1;
     public static final int MORE_FLAG = 1;
     public static final int LARGE_FLAG = 2;
 }
