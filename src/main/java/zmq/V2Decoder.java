@@ -58,7 +58,7 @@ public class V2Decoder extends DecoderBase
     }
 
     @Override
-    protected boolean next()
+    protected int next()
     {
         switch(state()) {
         case ONE_BYTE_SIZE_READY:
@@ -70,11 +70,11 @@ public class V2Decoder extends DecoderBase
         case MESSAGE_READY:
             return messageReady();
         default:
-            return false;
+            return -1;
         }
     }
 
-    private boolean oneByteSizeReady()
+    private int oneByteSizeReady()
     {
         int size = tmpbuf[0];
         if (size < 0) {
@@ -85,7 +85,7 @@ public class V2Decoder extends DecoderBase
         if (maxmsgsize >= 0) {
             if (size > maxmsgsize) {
                 decodingError();
-                return false;
+                return -1;
             }
         }
 
@@ -98,10 +98,10 @@ public class V2Decoder extends DecoderBase
         nextStep(inProgress,
                 MESSAGE_READY);
 
-        return true;
+        return 0;
     }
 
-    private boolean eightByteSizeReady()
+    private int eightByteSizeReady()
     {
         //  The payload size is encoded as 64-bit unsigned integer.
         //  The most significant byte comes first.
@@ -113,14 +113,14 @@ public class V2Decoder extends DecoderBase
         if (maxmsgsize >= 0) {
             if (msgSize > maxmsgsize) {
                 decodingError();
-                return false;
+                return -1;
             }
         }
 
         //  Message size must fit within range of size_t data type.
         if (msgSize > Integer.MAX_VALUE) {
             decodingError();
-            return false;
+            return -1;
         }
 
         //  inProgress is initialised at this point so in theory we should
@@ -132,10 +132,10 @@ public class V2Decoder extends DecoderBase
         nextStep(inProgress,
                 MESSAGE_READY);
 
-        return true;
+        return 0;
     }
 
-    private boolean flagsReady()
+    private int flagsReady()
     {
         //  Store the flags from the wire into the message structure.
         msgFlags = 0;
@@ -156,16 +156,16 @@ public class V2Decoder extends DecoderBase
             nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
         }
 
-        return true;
+        return 0;
     }
 
-    private boolean messageReady()
+    private int messageReady()
     {
         //  Message is completely read. Push it further and start reading
         //  new message. (inProgress is a 0-byte message after this point.)
 
         if (msgSink == null) {
-            return false;
+            return -1;
         }
 
         int rc = msgSink.pushMsg(inProgress);
@@ -174,13 +174,13 @@ public class V2Decoder extends DecoderBase
                 decodingError();
             }
 
-            return false;
+            return -1;
         }
 
         tmpbufWrap.position(0);
         tmpbufWrap.limit(1);
         nextStep(tmpbufWrap, FLAGS_READY);
 
-        return true;
+        return 1;
     }
 }

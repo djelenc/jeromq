@@ -81,31 +81,27 @@ public abstract class DecoderBase implements IDecoder
     }
 
     //  Processes the data in the buffer previously allocated using
-    //  get_buffer function. size_ argument specifies nemuber of bytes
-    //  actually filled into the buffer. Function returns number of
-    //  bytes actually processed.
-    public int processBuffer(ByteBuffer buf, int size)
+    //  get_buffer function. size_ argument specifies number of bytes
+    //  actually filled into the buffer. Function returns 1 when the
+    //  whole message was decoded or 0 when more data is required.
+    //  On error, -1 is returned and errno set accordingly.
+    //  Number of bytes processed is returned in byts_used_.
+    @Override
+    public int decode(ByteBuffer buf, int size)
     {
-        //  Check if we had an error in previous attempt.
-        if (state() < 0) {
-            return -1;
-        }
-
         //  In case of zero-copy simply adjust the pointers, no copying
         //  is required. Also, run the state machine in case all the data
         //  were processed.
         if (zeroCopy) {
             readBuf.position(readBuf.position() + size);
 
+            // TODO: change signature of state change methods from bool to int
             while (readBuf.remaining() == 0) {
                 if (!next()) {
-                    if (state() < 0) {
-                        return -1;
-                    }
-                    return size;
+                    return -1;
                 }
             }
-            return size;
+            return 0;
         }
 
         int pos = 0;
@@ -165,29 +161,10 @@ public abstract class DecoderBase implements IDecoder
         this.state = state;
     }
 
-    protected void decodingError()
+    /*protected void decodingError()
     {
         state(-1);
-    }
-
-    //  Returns true if the decoder has been fed all required data
-    //  but cannot proceed with the next decoding step.
-    //  False is returned if the decoder has encountered an error.
-    @Override
-    public boolean stalled()
-    {
-        //  Check whether there was decoding error.
-        if (!next()) {
-            return false;
-        }
-
-        while (readBuf.remaining() == 0) {
-            if (!next()) {
-                return next();
-            }
-        }
-        return false;
-    }
+    }*/
 
     public MsgAllocator getMsgAllocator()
     {
@@ -199,5 +176,5 @@ public abstract class DecoderBase implements IDecoder
        this.msgAllocator = msgAllocator;
     }
 
-    protected abstract boolean next();
+    protected abstract int next();
 }

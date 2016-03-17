@@ -51,7 +51,7 @@ public class V2Encoder extends EncoderBase
     }
 
     @Override
-    protected boolean next()
+    protected int next()
     {
         switch(state()) {
         case SIZE_READY:
@@ -59,18 +59,18 @@ public class V2Encoder extends EncoderBase
         case MESSAGE_READY:
             return messageReady();
         default:
-            return false;
+            return -1;
         }
     }
 
-    private boolean sizeReady()
+    private int sizeReady()
     {
         //  Write message body into the buffer.
         nextStep(inProgress.buf(), MESSAGE_READY, !inProgress.hasMore());
-        return true;
+        return 0;
     }
 
-    private boolean messageReady()
+    private int messageReady()
     {
         //  Read new message. If there is none, return false.
         //  Note that new state is set only if write is successful. That way
@@ -78,12 +78,12 @@ public class V2Encoder extends EncoderBase
         //  invocation.
 
         if (msgSource == null) {
-            return false;
+            return -1;
         }
 
         inProgress = msgSource.pullMsg();
         if (inProgress == null) {
-            return false;
+            return -1;
         }
 
         int protocolFlags = 0;
@@ -110,6 +110,6 @@ public class V2Encoder extends EncoderBase
             tmpbuf[1] = (byte) (size);
             nextStep(tmpbufWrap, SIZE_READY, false);
         }
-        return true;
+        return 1;
     }
 }

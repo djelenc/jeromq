@@ -65,7 +65,7 @@ public class V1Decoder extends DecoderBase
     }
 
     @Override
-    protected boolean next()
+    protected int next()
     {
         switch(state()) {
         case ONE_BYTE_SIZE_READY:
@@ -77,11 +77,11 @@ public class V1Decoder extends DecoderBase
         case MESSAGE_READY:
             return messageReady();
         default:
-            return false;
+            return -1;
         }
     }
 
-    private boolean oneByteSizeReady()
+    private int oneByteSizeReady()
     {
         //  First byte of size is read. If it is 0xff(-1 for java byte) read 8-byte size.
         //  Otherwise allocate the buffer for message data and read the
@@ -96,7 +96,7 @@ public class V1Decoder extends DecoderBase
             //  There has to be at least one byte (the flags) in the message).
             if (first == 0) {
                 decodingError();
-                return false;
+                return -1;
             }
 
             int size = (int) first;
@@ -109,8 +109,7 @@ public class V1Decoder extends DecoderBase
             //  message and thus we can treat it as uninitialised...
             if (maxmsgsize >= 0 && (long) (size - 1) > maxmsgsize) {
                 decodingError();
-                return false;
-
+                return -1;
             }
             else {
                 inProgress = getMsgAllocator().allocate(size - 1);
@@ -119,11 +118,10 @@ public class V1Decoder extends DecoderBase
             tmpbufWrap.limit(1);
             nextStep(tmpbufWrap, FLAGS_READY);
         }
-        return true;
-
+        return 0;
     }
 
-    private boolean eightByteSizeReady()
+    private int eightByteSizeReady()
     {
         //  8-byte payload length is read. Allocate the buffer
         //  for message body and read the message data into it.
@@ -134,19 +132,19 @@ public class V1Decoder extends DecoderBase
         //  There has to be at least one byte (the flags) in the message).
         if (payloadLength <= 0) {
             decodingError();
-            return false;
+            return -1;
         }
 
         //  Message size must not exceed the maximum allowed size.
         if (maxmsgsize >= 0 && payloadLength - 1 > maxmsgsize) {
             decodingError();
-            return false;
+            return -1;
         }
 
         //  Message size must fit within range of size_t data type.
         if (payloadLength - 1 > Integer.MAX_VALUE) {
             decodingError();
-            return false;
+            return -1;
         }
 
         final int msgSize = (int) (payloadLength - 1);
@@ -158,10 +156,10 @@ public class V1Decoder extends DecoderBase
         tmpbufWrap.limit(1);
         nextStep(tmpbufWrap, FLAGS_READY);
 
-        return true;
+        return 0;
     }
 
-    private boolean flagsReady()
+    private int flagsReady()
     {
         //  Store the flags from the wire into the message structure.
 
@@ -172,28 +170,27 @@ public class V1Decoder extends DecoderBase
         nextStep(inProgress,
                 MESSAGE_READY);
 
-        return true;
-
+        return 0;
     }
 
-    private boolean messageReady()
+    private int messageReady()
     {
         //  Message is completely read. Push it further and start reading
         //  new message. (inProgress is a 0-byte message after this point.)
 
         if (msgSink == null) {
-            return false;
+            return -1;
         }
 
         int rc = msgSink.pushMsg(inProgress);
         if (rc != 0) {
-            return false;
+            return -1;
         }
 
         tmpbufWrap.position(0);
         tmpbufWrap.limit(1);
         nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
 
-        return true;
+        return 1;
     }
 }

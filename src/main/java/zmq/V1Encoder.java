@@ -47,7 +47,7 @@ public class V1Encoder extends EncoderBase
     }
 
     @Override
-    protected boolean next()
+    protected int next()
     {
         switch(state()) {
         case SIZE_READY:
@@ -55,19 +55,19 @@ public class V1Encoder extends EncoderBase
         case MESSAGE_READY:
             return messageReady();
         default:
-            return false;
+            return -1;
         }
     }
 
-    private boolean sizeReady()
+    private int sizeReady()
     {
         //  Write message body into the buffer.
         nextStep(inProgress.buf(),
                 MESSAGE_READY, !inProgress.hasMore());
-        return true;
+        return 0;
     }
 
-    private boolean messageReady()
+    private int messageReady()
     {
         //  Destroy content of the old message.
         //inProgress.close ();
@@ -78,12 +78,12 @@ public class V1Encoder extends EncoderBase
         //  invocation.
 
         if (msgSource == null) {
-            return false;
+            return -1;
         }
 
         inProgress = msgSource.pullMsg();
         if (inProgress == null) {
-            return false;
+            return -1;
         }
 
         //  Get the message size.
@@ -110,6 +110,6 @@ public class V1Encoder extends EncoderBase
             nextStep(tmpbufWrap, SIZE_READY, false);
         }
 
-        return true;
+        return 1;
     }
 }
