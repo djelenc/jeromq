@@ -80,12 +80,14 @@ public abstract class DecoderBase implements IDecoder
         }
     }
 
-    //  Processes the data in the buffer previously allocated using
-    //  get_buffer function. size_ argument specifies number of bytes
-    //  actually filled into the buffer. Function returns 1 when the
-    //  whole message was decoded or 0 when more data is required.
-    //  On error, -1 is returned and errno set accordingly.
-    //  Number of bytes processed is returned in byts_used_.
+
+    /** TODO: This method is not correctly implemented yet!
+     * Processes the data in the buffer previously allocated using {@link #getBuffer}.
+     *
+     * @param buf  Buffer to decode
+     * @param size number of bytes actually filled into the buffer
+     * @return 1 when the whole message decodes; 0 when more data is needed; -1 when an error occurs
+     */
     @Override
     public int decode(ByteBuffer buf, int size)
     {
@@ -95,10 +97,11 @@ public abstract class DecoderBase implements IDecoder
         if (zeroCopy) {
             readBuf.position(readBuf.position() + size);
 
-            // TODO: change signature of state change methods from bool to int
             while (readBuf.remaining() == 0) {
-                if (!next()) {
-                    return -1;
+                final int rc = next();
+
+                if (rc != 0) {
+                    return rc;
                 }
             }
             return 0;
@@ -109,7 +112,8 @@ public abstract class DecoderBase implements IDecoder
             //  Try to get more space in the message to fill in.
             //  If none is available, return.
             while (readBuf.remaining() == 0) {
-                if (!next()) {
+                final int rc = next();
+                if (rc != 0) {
                     if (state() < 0) {
                         return -1;
                     }

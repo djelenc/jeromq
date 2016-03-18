@@ -26,10 +26,8 @@ public class V1Encoder extends EncoderBase
     private static final int SIZE_READY = 0;
     private static final int MESSAGE_READY = 1;
 
-    private Msg inProgress;
     private final byte[] tmpbuf;
     private final ByteBuffer tmpbufWrap;
-    private IMsgSource msgSource;
 
     public V1Encoder(int bufsize)
     {
@@ -37,13 +35,7 @@ public class V1Encoder extends EncoderBase
         tmpbuf = new byte[10];
         tmpbufWrap = ByteBuffer.wrap(tmpbuf);
         //  Write 0 bytes to the batch and go to messageReady state.
-        nextStep((byte[]) null, 0, MESSAGE_READY, true);
-    }
-
-    @Override
-    public void setMsgSource(IMsgSource msgSource)
-    {
-        this.msgSource = msgSource;
+        nextStep(null, 0, MESSAGE_READY, true);
     }
 
     @Override
@@ -62,26 +54,17 @@ public class V1Encoder extends EncoderBase
     private int sizeReady()
     {
         //  Write message body into the buffer.
-        nextStep(inProgress.buf(),
-                MESSAGE_READY, !inProgress.hasMore());
+        nextStep(inProgress.buf(), MESSAGE_READY, true);
         return 0;
     }
 
     private int messageReady()
     {
-        //  Destroy content of the old message.
-        //inProgress.close ();
-
-        //  Read new message. If there is none, return false.
+        //  Read new message. If there is none, return -1.
         //  Note that new state is set only if write is successful. That way
         //  unsuccessful write will cause retry on the next state machine
         //  invocation.
 
-        if (msgSource == null) {
-            return -1;
-        }
-
-        inProgress = msgSource.pullMsg();
         if (inProgress == null) {
             return -1;
         }

@@ -23,11 +23,21 @@ import java.nio.ByteBuffer;
 
 public interface IEncoder
 {
-    //  The function returns a batch of binary data. The data
-    //  are filled to a supplied buffer. If no buffer is supplied (data_
-    //  is null) encoder will provide buffer of its own.
+    /**
+     * Returns a batch of binary data encapsulated as a {@link Transfer} object.
+     * This object encapsulates the supplied buffer.
+     *
+     * If no buffer is supplied (buffer is null) encoder will provide buffer of its own.
+     *
+     * Function returns null when a new message is required.
+     * @param buffer Place to write data
+     * @return the passed-in buffer encapsulated in {@link Transfer} object; null when a new message is required
+     */
     Transfer encode(ByteBuffer buffer);
 
+    /**
+     * Loads a new message into decoder
+     */
     void loadMessage(Msg message);
 
     boolean hasData();

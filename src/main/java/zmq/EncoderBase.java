@@ -29,21 +29,19 @@ public abstract class EncoderBase implements IEncoder
     private FileChannel writeChannel;
     private int writePos;
 
-    //  Next step. If set to -1, it means that associated data stream
-    //  is dead.
+    /** Next step. If -1, the associated data stream is dead. */
     private int next;
 
-    //  If true, first byte of the message is being written.
+    /** If true, first byte of the message is being written. */
     private boolean newMessageFlag;
 
     protected Msg inProgress;
 
-    //  How much data to write before next step should be executed.
+    /** How much data to write before next step should be executed. */
     private int toWrite;
 
-    //  The buffer for encoded data.
+    /** The buffer for encoded data. */
     private ByteBuffer buffer;
-
     private int bufferSize;
 
     private boolean error;
@@ -56,9 +54,6 @@ public abstract class EncoderBase implements IEncoder
         inProgress = null;
     }
 
-    //  The function returns a batch of binary data. The data
-    //  are filled to a supplied buffer. If no buffer is supplied (data_
-    //  points to NULL) decoder object will provide buffer of its own.
     @Override
     public Transfer encode(ByteBuffer buffer)
     {
@@ -66,6 +61,7 @@ public abstract class EncoderBase implements IEncoder
             buffer = this.buffer;
         }
 
+        // TODO: check all methods that call encode and ensure they handle nulls properly
         if (inProgress == null)
             return null;
 
