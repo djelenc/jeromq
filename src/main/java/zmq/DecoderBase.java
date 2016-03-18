@@ -21,26 +21,27 @@ package zmq;
 
 import java.nio.ByteBuffer;
 
-//  Helper base class for decoders that know the amount of data to read
-//  in advance at any moment. Knowing the amount in advance is a property
-//  of the protocol used. 0MQ framing protocol is based size-prefixed
-//  paradigm, which qualifies it to be parsed by this class.
-//  On the other hand, XML-based transports (like XMPP or SOAP) don't allow
-//  for knowing the size of data to read in advance and should use different
-//  decoding algorithms.
-//
-//  This class implements the state machine that parses the incoming buffer.
-//  Derived class should implement individual state machine actions.
-
+/**
+ * Helper base class for decoders that know the amount of data to read
+ * in advance at any moment. Knowing the amount in advance is a property
+ * of the protocol used. 0MQ framing protocol is based size-prefixed
+ * paradigm, which qualifies it to be parsed by this class.
+ * On the other hand, XML-based transports (like XMPP or SOAP) don't allow
+ * for knowing the size of data to read in advance and should use different
+ * decoding algorithms.
+ * <p>
+ * This class implements the state machine that parses the incoming buffer.
+ * Derived class should implement individual state machine actions.
+ */
 public abstract class DecoderBase implements IDecoder
 {
-    //  Where to store the read data.
+    /** Where to store the read data.*/
     private ByteBuffer readBuf;
     private MsgAllocator msgAllocator = new MsgAllocatorHeap();
 
-    //  The buffer for data to decode.
-    private int bufsize;
+    /** The buffer for data to decode. */
     private ByteBuffer buf;
+    private int bufsize;
 
     private int state;
 
@@ -81,7 +82,7 @@ public abstract class DecoderBase implements IDecoder
     }
 
 
-    /** TODO: This method is not correctly implemented yet!
+    /**
      * Processes the data in the buffer previously allocated using {@link #getBuffer}.
      *
      * @param buf  Buffer to decode
@@ -114,17 +115,13 @@ public abstract class DecoderBase implements IDecoder
             while (readBuf.remaining() == 0) {
                 final int rc = next();
                 if (rc != 0) {
-                    if (state() < 0) {
-                        return -1;
-                    }
-
-                    return pos;
+                    return rc;
                 }
             }
 
             //  If there are no more data in the buffer, return.
             if (pos == size) {
-                return pos;
+                return 0;
             }
 
             //  Copy the data from buffer to the message.

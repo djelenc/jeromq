@@ -43,7 +43,6 @@ public class V1Decoder extends DecoderBase
     private final ByteBuffer tmpbufWrap;
     private Msg inProgress;
     private final long maxmsgsize;
-    private IMsgSink msgSink;
 
     public V1Decoder(int bufsize, long maxmsgsize)
     {
@@ -55,13 +54,6 @@ public class V1Decoder extends DecoderBase
 
         //  At the beginning, read one byte and go to oneByteSizeReady state.
         nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
-    }
-
-    //  Set the receiver of decoded messages.
-    @Override
-    public void setMsgSink(IMsgSink msgSink)
-    {
-        this.msgSink = msgSink;
     }
 
     @Override
@@ -95,7 +87,6 @@ public class V1Decoder extends DecoderBase
         else {
             //  There has to be at least one byte (the flags) in the message).
             if (first == 0) {
-                decodingError();
                 return -1;
             }
 
@@ -108,7 +99,6 @@ public class V1Decoder extends DecoderBase
             //  close it before calling msgInitWithSize, however, it's a 0-byte
             //  message and thus we can treat it as uninitialised...
             if (maxmsgsize >= 0 && (long) (size - 1) > maxmsgsize) {
-                decodingError();
                 return -1;
             }
             else {
@@ -131,19 +121,16 @@ public class V1Decoder extends DecoderBase
 
         //  There has to be at least one byte (the flags) in the message).
         if (payloadLength <= 0) {
-            decodingError();
             return -1;
         }
 
         //  Message size must not exceed the maximum allowed size.
         if (maxmsgsize >= 0 && payloadLength - 1 > maxmsgsize) {
-            decodingError();
             return -1;
         }
 
         //  Message size must fit within range of size_t data type.
         if (payloadLength - 1 > Integer.MAX_VALUE) {
-            decodingError();
             return -1;
         }
 
@@ -162,14 +149,9 @@ public class V1Decoder extends DecoderBase
     private int flagsReady()
     {
         //  Store the flags from the wire into the message structure.
-
         int first = tmpbuf[0];
-
         inProgress.setFlags(first & Msg.MORE);
-
-        nextStep(inProgress,
-                MESSAGE_READY);
-
+        nextStep(inProgress, MESSAGE_READY);
         return 0;
     }
 
@@ -177,20 +159,15 @@ public class V1Decoder extends DecoderBase
     {
         //  Message is completely read. Push it further and start reading
         //  new message. (inProgress is a 0-byte message after this point.)
-
-        if (msgSink == null) {
-            return -1;
-        }
-
-        int rc = msgSink.pushMsg(inProgress);
-        if (rc != 0) {
-            return -1;
-        }
-
         tmpbufWrap.position(0);
         tmpbufWrap.limit(1);
         nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
 
         return 1;
+    }
+
+    @Override
+    public Msg msg() {
+        return inProgress;
     }
 }

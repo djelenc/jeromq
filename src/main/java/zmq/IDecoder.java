@@ -25,9 +25,11 @@ public interface IDecoder {
     ByteBuffer getBuffer();
 
     /**
-     * Decodes data pointed to by buffer. When a message is decoded,
-     * 1 is returned. When the decoder needs more data, 0 is returned.
-     * On error, -1 is returned.
+     * Decodes data provided in the buffer.
+     *
+     * @param buffer data to be decoded
+     * @param size
+     * @return 1 when a message decodes completely, 0 when we require more data, -1 on error
      */
     int decode(ByteBuffer buffer, int size);
 

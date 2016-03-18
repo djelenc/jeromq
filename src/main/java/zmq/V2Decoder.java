@@ -31,16 +31,14 @@ public class V2Decoder extends DecoderBase
     private final byte[] tmpbuf;
     private final ByteBuffer tmpbufWrap;
     private Msg inProgress;
-    private IMsgSink msgSink;
     private final long maxmsgsize;
     private int msgFlags;
 
-    public V2Decoder(int bufsize, long maxmsgsize, IMsgSink session)
+    public V2Decoder(int bufsize, long maxmsgsize)
     {
         super(bufsize);
 
         this.maxmsgsize = maxmsgsize;
-        msgSink = session;
 
         tmpbuf = new byte[8];
         tmpbufWrap = ByteBuffer.wrap(tmpbuf);
@@ -48,13 +46,6 @@ public class V2Decoder extends DecoderBase
 
         //  At the beginning, read one byte and go to ONE_BYTE_SIZE_READY state.
         nextStep(tmpbufWrap, FLAGS_READY);
-    }
-
-    //  Set the receiver of decoded messages.
-    @Override
-    public void setMsgSink(IMsgSink msgSink)
-    {
-        this.msgSink = msgSink;
     }
 
     @Override
@@ -74,6 +65,29 @@ public class V2Decoder extends DecoderBase
         }
     }
 
+    private int flagsReady()
+    {
+        //  Store the flags from the wire into the message structure.
+        msgFlags = 0;
+        if ((tmpbuf[0] & V2Protocol.MORE_FLAG) > 0) {
+            msgFlags |= Msg.MORE;
+        }
+
+        //  The payload length is either one or eight bytes,
+        //  depending on whether the 'large' bit is set.
+        tmpbufWrap.position(0);
+        if ((tmpbuf[0] & V2Protocol.LARGE_FLAG) > 0) {
+            tmpbufWrap.limit(8);
+            nextStep(tmpbufWrap, EIGHT_BYTE_SIZE_READY);
+        }
+        else {
+            tmpbufWrap.limit(1);
+            nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
+        }
+
+        return 0;
+    }
+
     private int oneByteSizeReady()
     {
         int size = tmpbuf[0];
@@ -82,11 +96,8 @@ public class V2Decoder extends DecoderBase
         }
 
         //  Message size must not exceed the maximum allowed size.
-        if (maxmsgsize >= 0) {
-            if (size > maxmsgsize) {
-                decodingError();
-                return -1;
-            }
+        if (maxmsgsize >= 0 && size > maxmsgsize) {
+            return -1;
         }
 
         //  inProgress is initialised at this point so in theory we should
@@ -95,8 +106,7 @@ public class V2Decoder extends DecoderBase
         inProgress = getMsgAllocator().allocate(size);
 
         inProgress.setFlags(msgFlags);
-        nextStep(inProgress,
-                MESSAGE_READY);
+        nextStep(inProgress, MESSAGE_READY);
 
         return 0;
     }
@@ -110,16 +120,12 @@ public class V2Decoder extends DecoderBase
         final long msgSize = tmpbufWrap.getLong(0);
 
         //  Message size must not exceed the maximum allowed size.
-        if (maxmsgsize >= 0) {
-            if (msgSize > maxmsgsize) {
-                decodingError();
-                return -1;
-            }
+        if (maxmsgsize >= 0 && msgSize > maxmsgsize) {
+            return -1;
         }
 
         //  Message size must fit within range of size_t data type.
         if (msgSize > Integer.MAX_VALUE) {
-            decodingError();
             return -1;
         }
 
@@ -129,58 +135,24 @@ public class V2Decoder extends DecoderBase
         inProgress = getMsgAllocator().allocate((int) msgSize);
 
         inProgress.setFlags(msgFlags);
-        nextStep(inProgress,
-                MESSAGE_READY);
-
-        return 0;
-    }
-
-    private int flagsReady()
-    {
-        //  Store the flags from the wire into the message structure.
-        msgFlags = 0;
-        int first = tmpbuf[0];
-        if ((first & V2Protocol.MORE_FLAG) > 0) {
-            msgFlags |= Msg.MORE;
-        }
-
-        //  The payload length is either one or eight bytes,
-        //  depending on whether the 'large' bit is set.
-        tmpbufWrap.position(0);
-        if ((first & V2Protocol.LARGE_FLAG) > 0) {
-            tmpbufWrap.limit(8);
-            nextStep(tmpbufWrap, EIGHT_BYTE_SIZE_READY);
-        }
-        else {
-            tmpbufWrap.limit(1);
-            nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
-        }
+        nextStep(inProgress, MESSAGE_READY);
 
         return 0;
     }
 
     private int messageReady()
     {
-        //  Message is completely read. Push it further and start reading
-        //  new message. (inProgress is a 0-byte message after this point.)
-
-        if (msgSink == null) {
-            return -1;
-        }
-
-        int rc = msgSink.pushMsg(inProgress);
-        if (rc != 0) {
-            if (rc != ZError.EAGAIN) {
-                decodingError();
-            }
-
-            return -1;
-        }
-
+        //  Message is completely read. Signal this to the caller
+        //  and prepare to decode next message.
         tmpbufWrap.position(0);
         tmpbufWrap.limit(1);
         nextStep(tmpbufWrap, FLAGS_READY);
 
         return 1;
+    }
+
+    @Override
+    public Msg msg() {
+        return inProgress;
     }
 }
