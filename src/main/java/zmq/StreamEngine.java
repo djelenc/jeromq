@@ -26,7 +26,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SocketChannel;
 
-public class StreamEngine implements IEngine, IPollEvents, IMsgSink
+public class StreamEngine implements IEngine, IPollEvents
 {
     enum Protocol
     {
@@ -41,14 +41,12 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         }
     }
 
-    //  Size of the greeting message:
-    //  Preamble (10 bytes) + version (1 byte) + socket type (1 byte).
+    /**
+     * Size of the greeting message:
+     * Preamble (10 bytes) + version (1 byte) + socket type (1 byte).
+     */
     private static final int GREETING_SIZE = 12;
 
-    //  True iff we are registered with an I/O poller.
-    private boolean ioEnabled;
-
-    //final private IOObject ioObject;
     private SocketChannel handle;
 
     private ByteBuffer inbuf;
@@ -59,20 +57,23 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
     private int outsize;
     private EncoderBase encoder;
 
-    //  When true, we are still trying to determine whether
-    //  the peer is using versioned protocol, and if so, which
-    //  version.  When false, normal message flow has started.
+    /**
+     * When true, we are still trying to determine whether
+     * the peer is using versioned protocol, and if so, which
+     * version.  When false, normal message flow has started.
+     */
     private boolean handshaking;
 
-    //  The receive buffer holding the greeting message
-    //  that we are receiving from the peer.
+    /**
+     * The receive buffer holding the greeting message
+     * that we are receiving from the peer.
+     */
     private final ByteBuffer greeting;
 
-    //  The send buffer holding the greeting message
-    //  that we are sending to the peer.
+    /** The send buffer holding the greeting message that we are sending to the peer. */
     private final ByteBuffer greetingOutputBuffer;
 
-    //  The session this engine is attached to.
+    /** The session this engine is attached to. */
     private SessionBase session;
 
     //  Detached transient session.
@@ -80,22 +81,58 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
 
     private Options options;
 
-    // String representation of endpoint
+    /** String representation of endpoint */
     private String endpoint;
 
     private boolean plugged;
 
-    // Socket
+    private boolean ioError;
+
+    /**
+     * True iff the session could not accept more
+     * messages due to flow control.
+     */
+    private boolean congested;
+
+    /**
+     * True iff the engine has received identity message.
+     */
+    private boolean identityReceived;
+
+    /**
+     * True iff the engine has sent identity message.
+     */
+    private boolean identitySent;
+
+    /**
+     * True iff the engine has received all ZMTP control messages.
+     */
+    private boolean rxInitialized;
+
+    /**
+     * True iff the engine has sent all ZMTP control messages.
+     */
+    private boolean txInitialized;
+
+    /**
+     * Indicates whether the engine is to inject a phony
+     * subscription message into the incoming stream.
+     * Needed to support old peers.
+     */
+    private boolean subscriptionRequired;
+
+    /** Socket */
     private SocketBase socket;
 
     private IOObject ioObject;
+
+    Msg txMsg;
 
     public StreamEngine(SocketChannel handle, final Options options, final String endpoint)
     {
         this.handle = handle;
         inbuf = null;
         insize = 0;
-        ioEnabled = false;
         outbuf = null;
         outsize = 0;
         handshaking = true;
@@ -108,6 +145,15 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         greetingOutputBuffer = ByteBuffer.allocate(GREETING_SIZE).order(ByteOrder.BIG_ENDIAN);
         encoder = null;
         decoder = null;
+        ioError = false;
+        congested = false;
+        identityReceived = false;
+        identitySent = false;
+        rxInitialized = false;
+        txInitialized = false;
+        subscriptionRequired = false;
+
+        txMsg = new Msg();
 
         //  Put the socket into non-blocking mode.
         try {
@@ -241,7 +287,7 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         //  Connect to I/O threads poller object.
         ioObject.plug(ioThread);
         ioObject.addHandle(handle);
-        ioEnabled = true;
+        ioError = false;
 
         //  Send the 'length' and 'flags' fields of the identity message.
         //  The 'length' field is encoded in the long format.
@@ -277,21 +323,13 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         plugged = false;
 
         //  Cancel all fd subscriptions.
-        if (ioEnabled) {
+        if (!ioError) {
             ioObject.removeHandle(handle);
-            ioEnabled = false;
         }
 
         //  Disconnect from I/O threads poller object.
         ioObject.unplug();
 
-        //  Disconnect from session object.
-        if (encoder != null) {
-            encoder.setMsgSource(null);
-        }
-        if (decoder != null) {
-            decoder.setMsgSink(null);
-        }
         session = null;
     }
 
@@ -305,6 +343,8 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
     @Override
     public void inEvent()
     {
+        assert !ioError;
+
         //  If still handshaking, receive and process the greeting message.
         if (handshaking) {
             if (!handshake()) {
@@ -313,7 +353,12 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         }
 
         assert (decoder != null);
-        boolean disconnection = false;
+
+        if (congested) {
+            ioObject.removeHandle(handle);
+            ioError = true;
+            return;
+        }
 
         //  If there's no data to process in the buffer...
         if (insize == 0) {
@@ -322,48 +367,55 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
             //  the underlying TCP layer has fixed buffer size and thus the
             //  number of bytes read will be always limited.
             inbuf = decoder.getBuffer();
-            insize = read(inbuf);
+            final int bytesRead = read(inbuf);
             inbuf.flip();
 
             //  Check whether the peer has closed the connection.
-            if (insize == -1) {
-                insize = 0;
-                disconnection = true;
-            }
-        }
-
-        //  Push the data to the decoder.
-        int processed = decoder.processBuffer(inbuf, insize);
-
-        if (processed == -1) {
-            disconnection = true;
-        }
-        else {
-            //  Stop polling for input if we got stuck.
-            if (processed < insize) {
-                ioObject.resetPollIn(handle);
-            }
-
-            //  Adjust the buffer.
-            insize -= processed;
-        }
-
-        //  Flush all messages the decoder may have produced.
-        session.flush();
-
-        //  An input error has occurred. If the last decoded message
-        //  has already been accepted, we terminate the engine immediately.
-        //  Otherwise, we stop waiting for socket events and postpone
-        //  the termination until after the message is accepted.
-        if (disconnection) {
-            if (decoder.stalled()) {
-                ioObject.removeHandle(handle);
-                ioEnabled = false;
-            }
-            else {
+            if (bytesRead == -1) {
                 error();
+                return;
             }
+
+            //  Adjust input size
+            insize = bytesRead;
         }
+
+        // TODO: continue here!
+
+        //decoder.decode(inbuf, insize);
+        //inbuf.position();
+        //inbuf.limit();
+
+        int rc = 0;
+        int processed;
+
+        while (insize > 0) {
+            //rc = decoder->decode (inpos, insize, processed);
+            rc = decoder.decode(inbuf, insize);
+            processed = inbuf.position();
+            assert processed <= insize;
+            // inpos += processed;
+            inbuf.position(inbuf.position() + processed);
+            insize -= processed;
+            if (rc == 0 || rc == -1)
+                break;
+            rc = writeMsg(decoder.msg());
+            if (rc == -1)
+                break;
+        }
+
+        //  Tear down the connection if we have failed to decode input data
+        //  or the session has rejected the message.
+        if (rc == -1) {
+            if (errno != EAGAIN) {
+                error ();
+                return;
+            }
+            congested = true;
+            ioObject.resetPollIn(handle);
+        }
+
+        session.flush();
     }
 
     @Override
@@ -592,34 +644,11 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         return true;
     }
 
-    @Override
-    public int pushMsg(Msg msg)
-    {
-        assert (options.type == ZMQ.ZMQ_PUB || options.type == ZMQ.ZMQ_XPUB);
-
-        //  The first message is identity.
-        //  Let the session process it.
-        int rc = session.pushMsg(msg);
-        assert (rc == 0);
-
-        //  Inject the subscription message so that the ZMQ 2.x peer
-        //  receives our messages.
-        msg = new Msg(new byte[] { 1 });
-        rc = session.pushMsg(msg);
-        session.flush();
-
-        //  Once we have injected the subscription message, we can
-        //  Divert the message flow back to the session.
-        assert (decoder != null);
-        decoder.setMsgSink(session);
-
-        return rc;
-    }
-
     private void error()
     {
         assert (session != null);
         socket.eventDisconnected(endpoint, handle);
+        session.flush();
         session.detach();
         unplug();
         destroy();
@@ -649,5 +678,78 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         }
 
         return nbytes;
+    }
+
+    /**
+     * Fetches a message.
+     *
+     * @return The message; null if unsuccessful.
+     */
+    private Msg readMsg() {
+        boolean rawSock = false;
+        try {
+            rawSock = options.encoder != null && options.encoder.getDeclaredField("RAW_ENCODER") != null;
+        } catch (NoSuchFieldException e) {
+        }
+
+        if (txInitialized || rawSock)
+            return session.pullMsg();
+
+        if (!identitySent) {
+            txMsg = new Msg(options.identitySize);
+            txMsg.put(options.identity);
+            identitySent = true;
+            txInitialized = true;
+            return txMsg;
+        }
+
+        txInitialized = true;
+        return txMsg;
+    }
+
+    /**
+     * Writes a message
+     *
+     * @param msg message to be written
+     * @return 0 on success, error number otherwise
+     */
+    private int writeMsg(Msg msg) {
+        boolean rawSock = false;
+        try {
+            rawSock = options.encoder != null && options.encoder.getDeclaredField("RAW_ENCODER") != null;
+        } catch (NoSuchFieldException e) {
+        }
+
+        if (rxInitialized || rawSock)
+            session.pushMsg(msg);
+
+        if (!identityReceived) {
+            if (options.recvIdentity) {
+                msg.setFlags(Msg.IDENTITY);
+                int rc = session.pushMsg(msg);
+                if (rc != 0)
+                    return rc;
+            }
+            else {
+                msg.init(); // todo: check if needed
+            }
+
+            identityReceived = true;
+        }
+
+        //  Inject the subscription message, so that also
+        //  ZMQ 2.x peers receive published messages.
+        if (subscriptionRequired) {
+            msg = new Msg(1);
+            msg.put((byte) 1);
+
+            final int rc = session.pushMsg(msg);
+            if (rc != 0)
+                return rc;
+            subscriptionRequired = false;
+        }
+
+        rxInitialized = true;
+        return 0;
     }
 }

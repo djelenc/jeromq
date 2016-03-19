@@ -244,4 +244,11 @@ public class Msg
     {
         return String.format("#zmq.Msg{type=%s, size=%s, flags=%s}", type, size, flags);
     }
+
+    public void init() {
+        this.type = Type.DATA;
+        this.flags = 0;
+        this.size = 0;
+        buf.clear(); // todo: unsure if needed
+    }
 }
