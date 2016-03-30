@@ -26,10 +26,8 @@ public class V1Encoder extends EncoderBase
     private static final int SIZE_READY = 0;
     private static final int MESSAGE_READY = 1;
 
-    private Msg inProgress;
     private final byte[] tmpbuf;
     private final ByteBuffer tmpbufWrap;
-    private IMsgSource msgSource;
 
     public V1Encoder(int bufsize)
     {
@@ -37,55 +35,30 @@ public class V1Encoder extends EncoderBase
         tmpbuf = new byte[10];
         tmpbufWrap = ByteBuffer.wrap(tmpbuf);
         //  Write 0 bytes to the batch and go to messageReady state.
-        nextStep((byte[]) null, 0, MESSAGE_READY, true);
+        nextStep(null, 0, MESSAGE_READY, true);
     }
 
     @Override
-    public void setMsgSource(IMsgSource msgSource)
-    {
-        this.msgSource = msgSource;
-    }
-
-    @Override
-    protected boolean next()
+    protected void next()
     {
         switch(state()) {
         case SIZE_READY:
-            return sizeReady();
+            sizeReady();
         case MESSAGE_READY:
-            return messageReady();
+            messageReady();
         default:
-            return false;
+            assert false : "Illegal encoder state: " + state();
         }
     }
 
-    private boolean sizeReady()
+    private void sizeReady()
     {
         //  Write message body into the buffer.
-        nextStep(inProgress.buf(),
-                MESSAGE_READY, !inProgress.hasMore());
-        return true;
+        nextStep(inProgress.buf(), MESSAGE_READY, true);
     }
 
-    private boolean messageReady()
+    private void messageReady()
     {
-        //  Destroy content of the old message.
-        //inProgress.close ();
-
-        //  Read new message. If there is none, return false.
-        //  Note that new state is set only if write is successful. That way
-        //  unsuccessful write will cause retry on the next state machine
-        //  invocation.
-
-        if (msgSource == null) {
-            return false;
-        }
-
-        inProgress = msgSource.pullMsg();
-        if (inProgress == null) {
-            return false;
-        }
-
         //  Get the message size.
         int size = inProgress.size();
 
@@ -109,7 +82,5 @@ public class V1Encoder extends EncoderBase
             tmpbuf[9] = (byte) (inProgress.flags() & Msg.MORE);
             nextStep(tmpbufWrap, SIZE_READY, false);
         }
-
-        return true;
     }
 }
