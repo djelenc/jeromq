@@ -131,10 +131,10 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
        DecoderBase decoder;
        if (options.decoder == null) {
             if (version == Protocol.ZMTP_2_0) {
-               decoder = new V2Decoder(size, max, session);
+               decoder = new V2Decoder(size, max, session); // todo: pass in reference to socket.errno
             }
             else {
-               decoder = new V1Decoder(size, max);
+               decoder = new V1Decoder(size, max); // todo: pass in reference to socket.errno
             }
         }
         else {

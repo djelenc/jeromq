@@ -44,9 +44,11 @@ public abstract class DecoderBase implements IDecoder
 
     private int state;
 
+    private final ValueReference<Integer> errno;
+
     boolean zeroCopy;
 
-    public DecoderBase(int bufsize)
+    public DecoderBase(int bufsize, ValueReference<Integer> errno)
     {
         state = -1;
         this.bufsize = bufsize;
@@ -55,6 +57,7 @@ public abstract class DecoderBase implements IDecoder
         }
         readBuf = null;
         zeroCopy = false;
+        this.errno = errno;
     }
 
     //  Returns a buffer to be filled with binary data.
@@ -80,17 +83,9 @@ public abstract class DecoderBase implements IDecoder
         }
     }
 
-    //  Processes the data in the buffer previously allocated using
-    //  get_buffer function. size_ argument specifies nemuber of bytes
-    //  actually filled into the buffer. Function returns number of
-    //  bytes actually processed.
-    public int processBuffer(ByteBuffer buf, int size)
+    @Override
+    public int decode(ByteBuffer buf, int size)
     {
-        //  Check if we had an error in previous attempt.
-        if (state() < 0) {
-            return -1;
-        }
-
         //  In case of zero-copy simply adjust the pointers, no copying
         //  is required. Also, run the state machine in case all the data
         //  were processed.
@@ -98,43 +93,34 @@ public abstract class DecoderBase implements IDecoder
             readBuf.position(readBuf.position() + size);
 
             while (readBuf.remaining() == 0) {
-                if (!next()) {
-                    if (state() < 0) {
-                        return -1;
-                    }
-                    return size;
-                }
+                final int rc = next();
+                if (rc != 0)
+                    return rc;
             }
-            return size;
+            return 0;
         }
 
-        int pos = 0;
-        while (true) {
-            //  Try to get more space in the message to fill in.
-            //  If none is available, return.
-            while (readBuf.remaining() == 0) {
-                if (!next()) {
-                    if (state() < 0) {
-                        return -1;
-                    }
 
-                    return pos;
-                }
-            }
+        int bytesUsed = 0;
 
-            //  If there are no more data in the buffer, return.
-            if (pos == size) {
-                return pos;
-            }
-
-            //  Copy the data from buffer to the message.
-            int toCopy = Math.min(readBuf.remaining(), size - pos);
+        while (bytesUsed < size) {
+            int toCopy = Math.min(readBuf.remaining(), size - bytesUsed);
             int limit = buf.limit();
             buf.limit(buf.position() + toCopy);
             readBuf.put(buf);
             buf.limit(limit);
-            pos += toCopy;
+            bytesUsed += toCopy;
+
+            //  Try to get more space in the message to fill in.
+            //  If none is available, return.
+            while (readBuf.remaining() == 0) {
+                final int rc = next();
+                if (rc != 0)
+                    return rc;
+            }
         }
+
+        return 0;
     }
 
     protected void nextStep(Msg msg, int state)
@@ -165,30 +151,6 @@ public abstract class DecoderBase implements IDecoder
         this.state = state;
     }
 
-    protected void decodingError()
-    {
-        state(-1);
-    }
-
-    //  Returns true if the decoder has been fed all required data
-    //  but cannot proceed with the next decoding step.
-    //  False is returned if the decoder has encountered an error.
-    @Override
-    public boolean stalled()
-    {
-        //  Check whether there was decoding error.
-        if (!next()) {
-            return false;
-        }
-
-        while (readBuf.remaining() == 0) {
-            if (!next()) {
-                return next();
-            }
-        }
-        return false;
-    }
-
     public MsgAllocator getMsgAllocator()
     {
        return msgAllocator;
@@ -199,5 +161,5 @@ public abstract class DecoderBase implements IDecoder
        this.msgAllocator = msgAllocator;
     }
 
-    protected abstract boolean next();
+    protected abstract int next();
 }
