@@ -23,8 +23,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 class SessionBase extends Own implements
-                        Pipe.IPipeEvents, IPollEvents,
-                        IMsgSink, IMsgSource
+                        Pipe.IPipeEvents, IPollEvents
 {
     //  If true, this session (re)connects to the peer. Otherwise, it's
     //  a transient session created by the listener.
@@ -59,10 +58,6 @@ class SessionBase extends Own implements
 
     //  True is linger timer is running.
     private boolean hasLingerTimer;
-
-    //  If true, identity has been sent/received from the network.
-    private boolean identitySent;
-    private boolean identityReceived;
 
     //  Protocol and address to use when connecting.
     private final Address addr;
@@ -138,8 +133,6 @@ class SessionBase extends Own implements
         this.socket = socket;
         this.ioThread = ioThread;
         hasLingerTimer = false;
-        identitySent = false;
-        identityReceived = false;
         this.addr = addr;
 
         terminatingPipes = new HashSet<Pipe>();
@@ -174,16 +167,6 @@ class SessionBase extends Own implements
 
     public Msg pullMsg()
     {
-        //  First message to send is identity
-        if (!identitySent) {
-            Msg msg = new Msg(options.identitySize);
-            msg.put(options.identity, 0, options.identitySize);
-            identitySent = true;
-            incompleteIn = false;
-
-            return msg;
-        }
-
         if (pipe == null) {
             return null;
         }
@@ -198,19 +181,8 @@ class SessionBase extends Own implements
 
     }
 
-    @Override
     public int pushMsg(Msg msg)
     {
-        //  First message to receive is identity (if required).
-        if (!identityReceived) {
-            msg.setFlags(Msg.IDENTITY);
-            identityReceived = true;
-
-            if (!options.recvIdentity) {
-                return 0;
-            }
-        }
-
         if (pipe != null && pipe.write(msg)) {
             return 0;
         }
@@ -220,9 +192,7 @@ class SessionBase extends Own implements
 
     protected void reset()
     {
-        //  Restore identity flags.
-        identitySent = false;
-        identityReceived = false;
+        // TODO: check if the method can be removed
     }
 
     public void flush()
