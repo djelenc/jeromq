@@ -33,9 +33,8 @@ public abstract class EncoderBase implements IEncoder
     //  is dead.
     private int next;
 
-    //  If true, first byte of the message is being written.
-    @SuppressWarnings("unused")
-    private boolean beginning;
+    /** If true, first byte of the message is being written.*/
+    private boolean newMsgFlag;
 
     //  How much data to write before next step should be executed.
     private int toWrite;
@@ -47,19 +46,18 @@ public abstract class EncoderBase implements IEncoder
 
     private boolean error;
 
+    protected Msg inProgress;
+
     protected EncoderBase(int bufferSize)
     {
         this.bufferSize = bufferSize;
         buffer = ByteBuffer.allocateDirect(bufferSize);
         error = false;
+        inProgress = null;
     }
 
-    //  The function returns a batch of binary data. The data
-    //  are filled to a supplied buffer. If no buffer is supplied (data_
-    //  points to NULL) decoder object will provide buffer of its own.
-
     @Override
-    public Transfer getData(ByteBuffer buffer)
+    public Transfer encode(ByteBuffer buffer)
     {
         if (buffer == null) {
             buffer = this.buffer;
@@ -67,22 +65,25 @@ public abstract class EncoderBase implements IEncoder
 
         buffer.clear();
 
+        if (inProgress == null) {
+            return null;
+        }
+
         while (buffer.hasRemaining()) {
             //  If there are no more data to return, run the state machine.
             //  If there are still no data, return what we already have
             //  in the buffer.
             if (toWrite == 0) {
-                //  If we are to encode the beginning of a new message,
-                //  adjust the message offset.
-
-                if (!next()) {
+                if (newMsgFlag) {
+                    inProgress = null;
                     break;
                 }
+
+                next();
             }
 
             //  If there is file channel to send,
             //  send current buffer and the channel together
-
             if (writeChannel != null) {
                 buffer.flip();
                 Transfer t = new Transfer.FileChannelTransfer(buffer, writeChannel,
@@ -156,7 +157,7 @@ public abstract class EncoderBase implements IEncoder
         return error;
     }
 
-    protected abstract boolean next();
+    protected abstract void next();
 
     protected void nextStep(Msg msg, int state, boolean beginning)
     {
@@ -169,7 +170,7 @@ public abstract class EncoderBase implements IEncoder
     }
 
     protected void nextStep(byte[] buf, int toWrite,
-                            int next, boolean beginning)
+                            int next, boolean newMsgFlag)
     {
         if (buf != null) {
             writeBuf = ByteBuffer.wrap(buf);
@@ -182,7 +183,7 @@ public abstract class EncoderBase implements IEncoder
         writePos = 0;
         this.toWrite = toWrite;
         this.next = next;
-        this.beginning = beginning;
+        this.newMsgFlag = newMsgFlag;
     }
 
     protected void nextStep(ByteBuffer buf,
@@ -193,17 +194,24 @@ public abstract class EncoderBase implements IEncoder
        writePos = buf.position();
        this.toWrite = buf.remaining();
        this.next = next;
-       this.beginning = beginning;
+       this.newMsgFlag = beginning;
     }
 
     protected void nextStep(FileChannel ch, long pos, long toWrite,
-                            int next, boolean beginning)
+                            int next, boolean newMsgFlag)
     {
         writeBuf = null;
         writeChannel = ch;
         writePos = (int) pos;
         this.toWrite = (int) toWrite;
         this.next = next;
-        this.beginning = beginning;
+        this.newMsgFlag = newMsgFlag;
+    }
+
+    @Override
+    public void loadMsg(Msg msg) {
+        assert inProgress == null;
+        inProgress = msg;
+        next();
     }
 }

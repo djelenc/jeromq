@@ -1,9 +1,9 @@
 List of files to be updated according to 
 $ git difftool --dir-diff 2aec837218c4b9d2cdea7f33005ce4c3ad57f6c5..7942db7606c76f71b77863f8f883047ec69ffc5f
 [ ] src/decoder.hpp
-[ ] src/encoder.hpp
+[x] src/encoder.hpp (EncoderBase.java)
 [ ] src/i_decoder.hpp
-[ ] src/i_encoder.hpp
+[x] src/i_encoder.hpp (IEncoder.java)
 [ ] src/raw_decoder.cpp
 [ ] src/raw_decoder.hpp
 [ ] src/raw_encoder.cpp
