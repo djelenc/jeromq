@@ -44,7 +44,7 @@ public abstract class DecoderBase implements IDecoder
 
     private int state;
 
-    private final ValueReference<Integer> errno;
+    protected final ValueReference<Integer> errno;
 
     boolean zeroCopy;
 

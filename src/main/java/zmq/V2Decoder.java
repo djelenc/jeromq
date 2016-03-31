@@ -31,16 +31,14 @@ public class V2Decoder extends DecoderBase
     private final byte[] tmpbuf;
     private final ByteBuffer tmpbufWrap;
     private Msg inProgress;
-    private IMsgSink msgSink;
     private final long maxmsgsize;
     private int msgFlags;
 
-    public V2Decoder(int bufsize, long maxmsgsize, IMsgSink session)
+    public V2Decoder(int bufsize, long maxmsgsize, ValueReference<Integer> errno)
     {
-        super(bufsize);
+        super(bufsize, errno);
 
         this.maxmsgsize = maxmsgsize;
-        msgSink = session;
 
         tmpbuf = new byte[8];
         tmpbufWrap = ByteBuffer.wrap(tmpbuf);
@@ -50,15 +48,8 @@ public class V2Decoder extends DecoderBase
         nextStep(tmpbufWrap, FLAGS_READY);
     }
 
-    //  Set the receiver of decoded messages.
     @Override
-    public void setMsgSink(IMsgSink msgSink)
-    {
-        this.msgSink = msgSink;
-    }
-
-    @Override
-    protected boolean next()
+    protected int next()
     {
         switch(state()) {
         case ONE_BYTE_SIZE_READY:
@@ -70,11 +61,11 @@ public class V2Decoder extends DecoderBase
         case MESSAGE_READY:
             return messageReady();
         default:
-            return false;
+            throw new AssertionError("Invalid decoder state: " + state());
         }
     }
 
-    private boolean oneByteSizeReady()
+    private int oneByteSizeReady()
     {
         int size = tmpbuf[0];
         if (size < 0) {
@@ -84,24 +75,20 @@ public class V2Decoder extends DecoderBase
         //  Message size must not exceed the maximum allowed size.
         if (maxmsgsize >= 0) {
             if (size > maxmsgsize) {
-                decodingError();
-                return false;
+                errno.set(ZError.EMSGSIZE);
+                return -1;
             }
         }
 
-        //  inProgress is initialised at this point so in theory we should
-        //  close it before calling msgInitWithSize, however, it's a 0-byte
-        //  message and thus we can treat it as uninitialised...
+        // inProgress is initialised at this point
         inProgress = getMsgAllocator().allocate(size);
 
         inProgress.setFlags(msgFlags);
-        nextStep(inProgress,
-                MESSAGE_READY);
-
-        return true;
+        nextStep(inProgress, MESSAGE_READY);
+        return 0;
     }
 
-    private boolean eightByteSizeReady()
+    private int eightByteSizeReady()
     {
         //  The payload size is encoded as 64-bit unsigned integer.
         //  The most significant byte comes first.
@@ -112,30 +99,26 @@ public class V2Decoder extends DecoderBase
         //  Message size must not exceed the maximum allowed size.
         if (maxmsgsize >= 0) {
             if (msgSize > maxmsgsize) {
-                decodingError();
-                return false;
+                errno.set(ZError.EMSGSIZE);
+                return -1;
             }
         }
 
         //  Message size must fit within range of size_t data type.
         if (msgSize > Integer.MAX_VALUE) {
-            decodingError();
-            return false;
+            errno.set(ZError.EMSGSIZE);
+            return -1;
         }
 
-        //  inProgress is initialised at this point so in theory we should
-        //  close it before calling init_size, however, it's a 0-byte
-        //  message and thus we can treat it as uninitialised.
+        // inProgress is initialised at this point
         inProgress = getMsgAllocator().allocate((int) msgSize);
-
         inProgress.setFlags(msgFlags);
-        nextStep(inProgress,
-                MESSAGE_READY);
+        nextStep(inProgress, MESSAGE_READY);
 
-        return true;
+        return 0;
     }
 
-    private boolean flagsReady()
+    private int flagsReady()
     {
         //  Store the flags from the wire into the message structure.
         msgFlags = 0;
@@ -156,31 +139,22 @@ public class V2Decoder extends DecoderBase
             nextStep(tmpbufWrap, ONE_BYTE_SIZE_READY);
         }
 
-        return true;
+        return 0;
     }
 
-    private boolean messageReady()
+    private int messageReady()
     {
-        //  Message is completely read. Push it further and start reading
-        //  new message. (inProgress is a 0-byte message after this point.)
-
-        if (msgSink == null) {
-            return false;
-        }
-
-        int rc = msgSink.pushMsg(inProgress);
-        if (rc != 0) {
-            if (rc != ZError.EAGAIN) {
-                decodingError();
-            }
-
-            return false;
-        }
-
+        // Message is completely read. Signal this to the caller
+        // and prepare to decode next message.
         tmpbufWrap.position(0);
         tmpbufWrap.limit(1);
         nextStep(tmpbufWrap, FLAGS_READY);
 
-        return true;
+        return 1;
+    }
+
+    @Override
+    public Msg msg() {
+        return inProgress;
     }
 }
