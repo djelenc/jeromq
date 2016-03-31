@@ -84,13 +84,14 @@ public abstract class DecoderBase implements IDecoder
     }
 
     @Override
-    public int decode(ByteBuffer buf, int size)
+    public int decode(ByteBuffer buf, int size, IntReference processed)
     {
         //  In case of zero-copy simply adjust the pointers, no copying
         //  is required. Also, run the state machine in case all the data
         //  were processed.
         if (zeroCopy) {
             readBuf.position(readBuf.position() + size);
+            processed.set(size);
 
             while (readBuf.remaining() == 0) {
                 final int rc = next();
@@ -101,15 +102,15 @@ public abstract class DecoderBase implements IDecoder
         }
 
 
-        int bytesUsed = 0;
+        processed.set(0);
 
-        while (bytesUsed < size) {
-            int toCopy = Math.min(readBuf.remaining(), size - bytesUsed);
+        while (processed.get() < size) {
+            int toCopy = Math.min(readBuf.remaining(), size - processed.get());
             int limit = buf.limit();
             buf.limit(buf.position() + toCopy);
             readBuf.put(buf);
             buf.limit(limit);
-            bytesUsed += toCopy;
+            processed.set(processed.get() + toCopy);
 
             //  Try to get more space in the message to fill in.
             //  If none is available, return.

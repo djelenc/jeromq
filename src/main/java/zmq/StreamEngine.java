@@ -26,7 +26,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SocketChannel;
 
-public class StreamEngine implements IEngine, IPollEvents, IMsgSink
+public class StreamEngine implements IEngine, IPollEvents
 {
     enum Protocol
     {
@@ -45,10 +45,6 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
     //  Preamble (10 bytes) + version (1 byte) + socket type (1 byte).
     private static final int GREETING_SIZE = 12;
 
-    //  True iff we are registered with an I/O poller.
-    private boolean ioEnabled;
-
-    //final private IOObject ioObject;
     private SocketChannel handle;
 
     private ByteBuffer inbuf;
@@ -58,6 +54,41 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
     private Transfer outbuf;
     private int outsize;
     private EncoderBase encoder;
+
+    private boolean ioError;
+
+    /**
+     * True iff the session could not accept more messages due to flow control.
+     */
+    private boolean congested;
+
+    /**
+     * True iff the engine has received identity message.
+     */
+    private boolean identityReceived;
+
+    /**
+     * True iff the engine has sent identity message.
+     */
+    private boolean identitySent;
+
+    /**
+     * True iff the engine has received all ZMTP control messages.
+     */
+    private boolean rxInitialized;
+
+    /**
+     * True iff the engine has sent all ZMTP control messages.
+     */
+    private boolean txInitialized;
+
+    /**
+     * Indicates whether the engine is to inject a phony subscription message
+     * into the incoming stream. Needed to support old peers.
+     */
+    private boolean subscriptionRequired;
+
+    private Msg txMsg;
 
     //  When true, we are still trying to determine whether
     //  the peer is using versioned protocol, and if so, which
@@ -74,9 +105,6 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
 
     //  The session this engine is attached to.
     private SessionBase session;
-
-    //  Detached transient session.
-    //private SessionBase leftover_session;
 
     private Options options;
 
@@ -95,7 +123,14 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         this.handle = handle;
         inbuf = null;
         insize = 0;
-        ioEnabled = false;
+        ioError = false;
+        congested = false;
+        identityReceived = false;
+        identitySent = false;
+        rxInitialized = false;
+        txInitialized = false;
+        subscriptionRequired = false;
+        txMsg = new Msg();
         outbuf = null;
         outsize = 0;
         handshaking = true;
@@ -131,10 +166,10 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
        DecoderBase decoder;
        if (options.decoder == null) {
             if (version == Protocol.ZMTP_2_0) {
-               decoder = new V2Decoder(size, max, session); // todo: pass in reference to socket.errno
+               decoder = new V2Decoder(size, max, session.getSocket().errno);
             }
             else {
-               decoder = new V1Decoder(size, max); // todo: pass in reference to socket.errno
+               decoder = new V1Decoder(size, max, session.getSocket().errno);
             }
         }
         else {
@@ -142,12 +177,13 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
                Constructor<? extends DecoderBase> dcon;
 
                if (version == Protocol.ZMTP_1_0)  {
-                   dcon = options.decoder.getConstructor(int.class, long.class);
-                   decoder = dcon.newInstance(size, max);
+                   dcon = options.decoder.getConstructor(int.class, long.class, ValueReference.class);
+                   decoder = dcon.newInstance(size, max, session.getSocket().errno);
                }
                else {
-                   dcon = options.decoder.getConstructor(int.class, long.class, IMsgSink.class, int.class);
-                   decoder = dcon.newInstance(size, max, session, version);
+                   // fixme??
+                   dcon = options.decoder.getConstructor(int.class, long.class, ValueReference.class);
+                   decoder = dcon.newInstance(size, max, session.getSocket().errno);
                }
            }
            catch (SecurityException e) {
@@ -173,11 +209,11 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         return decoder;
     }
 
-    private EncoderBase newEncoder(int size, SessionBase session, Protocol version)
+    private EncoderBase newEncoder(int size, Protocol version)
     {
         if (options.encoder == null) {
             if (version == Protocol.ZMTP_2_0) {
-                return new V2Encoder(size, session);
+                return new V2Encoder(size);
             }
             return new V1Encoder(size);
         }
@@ -190,8 +226,9 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
                 return econ.newInstance(size);
             }
             else {
-                econ = options.encoder.getConstructor(int.class, IMsgSource.class, int.class);
-                return econ.newInstance(size, session, version);
+                // fixme??
+                econ = options.encoder.getConstructor(int.class);
+                return econ.newInstance(size);
             }
         }
         catch (SecurityException e) {
@@ -241,7 +278,7 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         //  Connect to I/O threads poller object.
         ioObject.plug(ioThread);
         ioObject.addHandle(handle);
-        ioEnabled = true;
+        ioError = false;
 
         //  Send the 'length' and 'flags' fields of the identity message.
         //  The 'length' field is encoded in the long format.
@@ -251,13 +288,12 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
 
         ioObject.setPollIn(handle);
         //  When there's a raw custom encoder, we don't send 10 bytes frame
-        boolean custom = false;
+        boolean custom;
         try {
             custom = options.encoder != null && options.encoder.getDeclaredField("RAW_ENCODER") != null;
         }
-        catch (SecurityException e) {
-        }
         catch (NoSuchFieldException e) {
+            custom = false;
         }
 
         if (!custom) {
@@ -277,21 +313,12 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         plugged = false;
 
         //  Cancel all fd subscriptions.
-        if (ioEnabled) {
+        if (!ioError) {
             ioObject.removeHandle(handle);
-            ioEnabled = false;
         }
 
         //  Disconnect from I/O threads poller object.
         ioObject.unplug();
-
-        //  Disconnect from session object.
-        if (encoder != null) {
-            encoder.setMsgSource(null);
-        }
-        if (decoder != null) {
-            decoder.setMsgSink(null);
-        }
         session = null;
     }
 
@@ -305,6 +332,8 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
     @Override
     public void inEvent()
     {
+        assert !ioError;
+
         //  If still handshaking, receive and process the greeting message.
         if (handshaking) {
             if (!handshake()) {
@@ -313,7 +342,13 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         }
 
         assert (decoder != null);
-        boolean disconnection = false;
+
+        //  If there has been an I/O error, stop polling.
+        if (congested) {
+            ioObject.removeHandle(handle);
+            ioError = true;
+            return;
+        }
 
         //  If there's no data to process in the buffer...
         if (insize == 0) {
@@ -327,48 +362,46 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
 
             //  Check whether the peer has closed the connection.
             if (insize == -1) {
-                insize = 0;
-                disconnection = true;
-            }
-        }
-
-        //  Push the data to the decoder.
-        int processed = decoder.processBuffer(inbuf, insize);
-
-        if (processed == -1) {
-            disconnection = true;
-        }
-        else {
-            //  Stop polling for input if we got stuck.
-            if (processed < insize) {
-                ioObject.resetPollIn(handle);
-            }
-
-            //  Adjust the buffer.
-            insize -= processed;
-        }
-
-        //  Flush all messages the decoder may have produced.
-        session.flush();
-
-        //  An input error has occurred. If the last decoded message
-        //  has already been accepted, we terminate the engine immediately.
-        //  Otherwise, we stop waiting for socket events and postpone
-        //  the termination until after the message is accepted.
-        if (disconnection) {
-            if (decoder.stalled()) {
-                ioObject.removeHandle(handle);
-                ioEnabled = false;
-            }
-            else {
                 error();
+                return;
             }
         }
+
+
+        int rc = 0;
+        final IntReference processed = new IntReference(0);
+
+        while (insize > 0) {
+            // fixme: remove processed and work with with inbuf pos() and limit()
+            rc = decoder.decode(inbuf, insize, processed);
+            assert (processed.get() <= insize);
+            insize -= processed.get();
+            if (rc == 0 || rc == -1)
+                break;
+            rc = writeMsg(decoder.msg());
+            if (rc == -1 || rc == ZError.EAGAIN)
+                break;
+        }
+
+        // Tear down the connection if we have failed to decode input data
+        // or the session has rejected the message.
+        if (rc == -1) {
+            error();
+            return;
+        } else
+        if (rc == ZError.EAGAIN) {
+            congested = true;
+            ioObject.resetPollIn(handle);
+        }
+
+        session.flush();
     }
 
     @Override
     public void outEvent()
     {
+        assert !ioError;
+
         //  If write buffer is empty, try to read new data from the encoder.
         if (outsize == 0) {
             //  Even when we stop polling as soon as there is no
@@ -379,8 +412,26 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
                  return;
             }
 
-            outbuf = encoder.getData(null);
+            //outbuf = encoder.getData(null);
+            outbuf = encoder.encode(null);
             outsize = outbuf.remaining();
+
+            while (outsize < Config.OUT_BATCH_SIZE.getValue()) {
+                txMsg = readMsg();
+
+                if (txMsg == null)
+                    break;
+                encoder.loadMsg(txMsg);
+                
+                unsigned char *bufptr = outpos + outsize;
+                size_t n = encoder->encode (&bufptr, out_batch_size - outsize);
+                zmq_assert (n > 0);
+                if (outpos == NULL)
+                    outpos = bufptr;
+                outsize += n;
+            }
+
+
             //  If there is no data to send, stop polling for output.
             if (outbuf.remaining() == 0) {
                 ioObject.resetPollOut(handle);
@@ -448,6 +499,9 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
     @Override
     public void activateOut()
     {
+        if (ioError)
+            return;
+
         ioObject.setPollOut(handle);
 
         //  Speculative write: The assumption is that at the moment new message
@@ -530,15 +584,12 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         //  Position of the version field in the greeting.
         final int versionPos = 10;
 
-        //  Is the peer using the unversioned protocol?
-        //  If so, we send and receive rests of identity
-        //  messages.
+        //  Is the peer using ZMTP/1.0 with no revision number?
+        //  If so, we send and receive rest of identity message
         if ((greeting.get(0) & 0xff) != 0xff || (greeting.get(9) & 0x01) == 0) {
-            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), null, Protocol.ZMTP_1_0);
-            encoder.setMsgSource(session);
+            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), Protocol.ZMTP_1_0);
 
             decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, null, Protocol.ZMTP_1_0);
-            decoder.setMsgSink(session);
 
             //  We have already sent the message header.
             //  Since there is no way to tell the encoder to
@@ -546,7 +597,7 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
             //  header data away.
             final int headerSize = options.identitySize + 1 >= 255 ? 10 : 2;
             ByteBuffer tmp = ByteBuffer.allocate(headerSize);
-            encoder.getData(tmp);
+            encoder.encode(tmp); // fixme?
             if (tmp.remaining() != headerSize) {
                 return false;
             }
@@ -557,27 +608,21 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
             insize = greeting.remaining();
 
             //  To allow for interoperability with peers that do not forward
-            //  their subscriptions, we inject a phony subsription
-            //  message into the incomming message stream. To put this
-            //  message right after the identity message, we temporarily
-            //  divert the message stream from session to ourselves.
+            //  their subscriptions, we inject a phony subscription
+            //  message into the incoming message stream.
             if (options.type == ZMQ.ZMQ_PUB || options.type == ZMQ.ZMQ_XPUB) {
-                decoder.setMsgSink(this);
+                subscriptionRequired = true;
             }
         }
         else
         if (greeting.get(versionPos) == Protocol.ZMTP_1_0.value) {
             //  ZMTP/1.0 framing.
-            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), null, Protocol.ZMTP_1_0);
-            encoder.setMsgSource(session);
-
+            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), Protocol.ZMTP_1_0);
             decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, null, Protocol.ZMTP_1_0);
-            decoder.setMsgSink(session);
         }
         else {
             //  ZMTP/2.0 framing protocol.
-            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), session, Protocol.ZMTP_2_0);
-
+            encoder = newEncoder(Config.OUT_BATCH_SIZE.getValue(), Protocol.ZMTP_2_0);
             decoder = newDecoder(Config.IN_BATCH_SIZE.getValue(), options.maxMsgSize, session, Protocol.ZMTP_2_0);
         }
         // Start polling for output if necessary.
@@ -592,62 +637,122 @@ public class StreamEngine implements IEngine, IPollEvents, IMsgSink
         return true;
     }
 
-    @Override
-    public int pushMsg(Msg msg)
-    {
-        assert (options.type == ZMQ.ZMQ_PUB || options.type == ZMQ.ZMQ_XPUB);
-
-        //  The first message is identity.
-        //  Let the session process it.
-        int rc = session.pushMsg(msg);
-        assert (rc == 0);
-
-        //  Inject the subscription message so that the ZMQ 2.x peer
-        //  receives our messages.
-        msg = new Msg(new byte[] { 1 });
-        rc = session.pushMsg(msg);
-        session.flush();
-
-        //  Once we have injected the subscription message, we can
-        //  Divert the message flow back to the session.
-        assert (decoder != null);
-        decoder.setMsgSink(session);
-
-        return rc;
-    }
-
     private void error()
     {
         assert (session != null);
         socket.eventDisconnected(endpoint, handle);
+        session.flush();
         session.detach();
         unplug();
         destroy();
     }
 
+    /**
+     * Writes data to the socket.
+     *
+     * @param buf Buffer to write
+     * @return Number of bytes actually written (even zero is considered a
+     * success). In case of error or orderly shutdown by the other peer, -1
+     * is returned.
+     */
     private int write(Transfer buf)
     {
-        int nbytes;
         try {
-            nbytes = buf.transferTo(handle);
+            return buf.transferTo(handle);
         }
         catch (IOException e) {
             return -1;
         }
-
-        return nbytes;
     }
 
+    /**
+     * Reads data from the socket and stores it into buf.
+     *
+     * @param buf Buffer to hold the read data
+     * @return Number of bytes actually read (even zero is considered a
+     * success). In case of error or orderly shutdown by the other peer,
+     * -1 is returned.
+     */
     private int read(ByteBuffer buf)
     {
-        int nbytes;
         try {
-            nbytes = handle.read(buf);
+            return handle.read(buf);
         }
         catch (IOException e) {
             return -1;
         }
+    }
 
-        return nbytes;
+    /**
+     * Fetches a message from the session (to be written to the socket)
+     * @return A message, null if none available
+     */
+    private Msg readMsg()
+    {
+        boolean custom;
+        try {
+            custom = options.encoder != null && options.encoder.getDeclaredField("RAW_ENCODER") != null;
+        } catch (NoSuchFieldException e) {
+            custom = false;
+        }
+
+        if (txInitialized || custom)
+            return session.pullMsg();
+
+        if (!identitySent) {
+            final Msg msg = new Msg(options.identitySize);
+            msg.put(options.identity, 0, options.identitySize);
+            identitySent = true;
+            txInitialized = true;
+            return msg;
+        }
+
+        txInitialized = true;
+        return null;
+    }
+
+    /**
+     * Pushes the message (previously read from a socket) to the session
+     * @param msg message
+     * @return 0 on success, -1 on error, {@link ZError#EAGAIN} when a retry is required
+     */
+    private int writeMsg(Msg msg)
+    {
+        boolean custom;
+        try {
+            custom = options.encoder != null && options.encoder.getDeclaredField("RAW_ENCODER") != null;
+        } catch (NoSuchFieldException e) {
+            custom = false;
+        }
+
+        if (rxInitialized || custom)
+            return session.pushMsg(msg);
+
+        if (!identityReceived) {
+            if (options.recvIdentity) {
+                msg.setFlags(Msg.IDENTITY);
+                final int rc = session.pushMsg(msg);
+                if (rc == -1)
+                    return -1;
+            }
+
+            identityReceived = true;
+        }
+
+        // Inject the subscription message, so that also
+        // ZMQ 2.x peers receive published messages.
+        if (subscriptionRequired) {
+            final Msg subscriptionMsg = new Msg(1);
+            subscriptionMsg.put((byte) 1);
+            final int rc = session.pushMsg(subscriptionMsg);
+
+            if (rc == -1)
+                return -1;
+
+            subscriptionRequired = false;
+        }
+
+        rxInitialized = true;
+        return 0;
     }
 }

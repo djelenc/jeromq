@@ -19,24 +19,26 @@
 
 package zmq;
 
-import java.nio.ByteBuffer;
-
-public interface IDecoder
+public class IntReference
 {
-    public ByteBuffer getBuffer();
+    private int value;
 
-    /**
-     * Decodes data pointed to by data_.
-     * <p>
-     * When a message is decoded, 1 is returned. When the decoder needs more data,
-     * 0 is returned. On error, -1 is returned and errno is set accordingly.
-     *
-     * @param data_ Data to decode
-     * @param size Number of bytes to decode
-     * @param processed reference to the integer denoting the number of processed bytes
-     * @return 1 on success, 0 when more data is needed, -1 on error (also sets errno)
-     */
-    int decode(ByteBuffer data_, int size, IntReference processed);
+    public IntReference(int value)
+    {
+        this.value = value;
+    }
 
-    Msg msg();
+    public IntReference()
+    {
+    }
+
+    public final int get()
+    {
+        return value;
+    }
+
+    public final void set(int value)
+    {
+        this.value = value;
+    }
 }

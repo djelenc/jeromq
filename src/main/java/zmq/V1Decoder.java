@@ -169,7 +169,8 @@ public class V1Decoder extends DecoderBase
     }
 
     @Override
-    public Msg msg() {
+    public Msg msg()
+    {
         return inProgress;
     }
 }
